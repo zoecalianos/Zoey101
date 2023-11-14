@@ -1,0 +1,670 @@
+---
+title: "Practicum Two"
+output: html_notebook
+---
+Problem One, Part One
+
+```{r Load csv}
+diabetes <- read.csv("C:\\Users\\zoe calianos\\Desktop\\R Work\\diabetes.csv")
+```
+
+Problem One, Part Two
+
+```{r Explore dataset}
+library(tidyverse)
+
+str(diabetes)
+```
+
+```{r Explore dataset 2}
+sum(is.na(diabetes))
+```
+
+```{r Explore dataset 3}
+summary(diabetes)
+```
+
+Problem One, Part Three 
+
+```{r Split training and test}
+library(caret)
+
+#set seed 
+set.seed(125)
+
+#Convert to numbers
+diabetes$Outcome <- as.numeric(as.character(diabetes$Outcome))
+
+#Split dataset, 70/30 
+index <- createDataPartition(diabetes$Outcome, p = .7, list = FALSE, times = 1)
+
+diabetes_train <- diabetes[ index,]
+diabetes_valid <- diabetes[-index,]
+```
+
+```{r Check datasets}
+sum(is.na(diabetes_train))
+
+sum(is.na(diabetes_valid))
+```
+
+Problem One, Part 4
+
+```{r Naive Bayes Classification}
+library(tidyverse)
+library(klaR)
+library(caret)
+
+#Make bins
+diabetes <- diabetes %>% mutate_at(vars(Age, Glucose, BloodPressure, Insulin), ~ cut(., breaks = 5, labels = FALSE)) %>% mutate(Outcome = as.factor(Outcome))
+
+#Split dataset, 70/30
+index <- createDataPartition(diabetes$Outcome, p = .7, list = FALSE, times = 1) 
+
+diabetes_train <- diabetes[index, ] 
+
+diabetes_valid <- diabetes[-index, ]
+
+#Build model
+model <- NaiveBayes(Outcome ~ ., data = diabetes_train)
+```
+
+```{r Check datasets 2}
+sum(is.na(diabetes_train))
+
+sum(is.na(diabetes_valid))
+```
+
+Problem One, Part Five
+
+```{r Confusion Matrix}
+#Make a prediction
+prediction <- predict(model, diabetes_valid)$class
+
+#Make matrix
+conf_matrix <- confusionMatrix(prediction, diabetes_valid$Outcome)
+
+#Print
+print(conf_matrix)
+```
+
+The confusion matrix tells us that the model is 76% accurate and has a p value of 0.00 is below the 0.05 threshold that usually signals that a result is statistically significant. 
+
+Problem One, Part 6
+
+```{r Logistic regression model}
+#Fit model with glm function per instructions
+log_model <- glm(Outcome ~ ., data = diabetes_train, family = binomial)
+
+#Print
+summary(log_model)
+```
+
+Problem One, Part Seven
+
+```{r Confusion matrix for logistic regression model}
+#Make prediction
+prediction2 <- predict(log_model, newdata = diabetes_valid, type = "response")
+
+#Make binary
+binary_prediction2 <- as.factor(ifelse(prediction2 > 0.5, 1, 0))
+diabetes_valid$Outcome <- as.factor(diabetes_valid$Outcome)
+
+#Make confusion matrix
+conf_matrix2 <- confusionMatrix(binary_prediction2, diabetes_valid$Outcome)
+
+#Print the confusion matrix
+print(conf_matrix2)
+```
+
+The logistic regression model is 78% accurate and has a very tiny p value, which means that the results are statistically significant.   
+
+Problem One, Part Eight
+
+```{r Decision Tree model}
+library(caret)
+library(rpart)
+library(rpart.plot)
+
+#Fit model
+tree_model <- rpart(Outcome ~ ., data = diabetes_train, method = "class")
+
+#Plot
+rpart.plot(tree_model, type = 4, extra = 2)
+
+#Make prediction
+prediction3 <- predict(tree_model, diabetes_valid, type = "class")
+
+#Convert to factors
+prediction3 <- as.factor(prediction3)
+diabetes_valid$Outcome <- as.factor(diabetes_valid$Outcome)
+
+```
+
+Problem One, Part Nine
+
+```{r Confusion matrix for decision tree}
+#Make matrix
+conf_matrix_tree <- confusionMatrix(prediction3, diabetes_valid$Outcome)
+
+#Print
+print(conf_matrix_tree)
+```
+
+The decision tree model is 76% accurate with a p value of 0.0004, which means that the results are statistically significant. 
+
+Problem One, Part Ten
+
+```{r Predict Earnings Class function}
+predictEarningsClass <- function(validationData, naiveBayesModel, logisticRegModel, decisionTreeModel) {
+  
+#NB model
+nb_predictions <- as.factor(predict(naiveBayesModel, validationData)$class)
+  
+#LR model
+lr_predictions <- as.factor(ifelse(predict(logisticRegModel, validationData, type = "response") > 0.5, 1, 0))
+  
+#Tree model
+dt_predictions <- predict(decisionTreeModel, validationData, type = "class")
+  
+#Combine
+combined_predictions <- data.frame(nb_predictions, lr_predictions, dt_predictions)
+  
+#Majority vote for final prediction
+  final_predictions <- apply(combined_predictions, 1, function(x) {
+    as.factor(names(sort(table(x), decreasing = TRUE)[1]))
+  }) 
+  return(final_predictions)}
+
+#Test with valid set and fitted model
+ensemble_predictions <- predictEarningsClass(diabetes_valid, model, log_model, tree_model)
+
+#Print
+head(ensemble_predictions)
+```
+
+Problem One, Part Eleven
+
+```{r Make a prediction with given data}
+#New data
+new_data <- data.frame(Pregnancies = 3, Glucose = 118, BloodPressure = 72, SkinThickness = 30, Insulin = 90, BMI = 35, DiabetesPedigreeFunction = NA, Age = 50)
+
+#Imput missing value with median
+new_data$DiabetesPedigreeFunction <- median(diabetes_train$DiabetesPedigreeFunction, na.rm = TRUE)
+
+#Make prediction
+prediction <- predictEarningsClass(new_data, model, log_model, tree_model)
+
+#Print
+print(prediction)
+```
+
+Problem Two, Part One
+
+```{r load csv for part two}
+cars.df <- read.csv("C:\\Users\\zoe calianos\\Desktop\\R Work\\cars.csv")
+```
+
+```{r check variables}
+str(cars.df)
+```
+
+```{r Get rid of character types for columns that are keeping}
+#change columns to numeric
+cars.df$bore <- as.numeric(as.character(cars.df$bore))
+cars.df$stroke <- as.numeric(as.character(cars.df$stroke))
+cars.df$horsepower <- as.numeric(as.character(cars.df$horsepower))
+cars.df$peak.rpm <- as.numeric(as.character(cars.df$peak.rpm))
+cars.df$price <- as.numeric(as.character(cars.df$price))
+```
+
+```{r Get rid of NAs}
+#Get rid of NAs
+cars.df$horsepower[is.na(cars.df$horsepower)] <- median(cars.df$horsepower, na.rm = TRUE)
+cars.df$peak.rpm[is.na(cars.df$peak.rpm)] <- median(cars.df$peak.rpm, na.rm = TRUE)
+cars.df$price[is.na(cars.df$price)] <- median(cars.df$price, na.rm = TRUE)
+cars.df$bore[is.na(cars.df$bore)] <- median(cars.df$bore, na.rm = TRUE)
+cars.df$stroke[is.na(cars.df$stroke)] <- median(cars.df$stroke, na.rm = TRUE)
+```
+
+```{r encode and drop}
+#Select columns
+selected_columns <- c('doors', 'cylinders', 'engine', 'make')  
+
+#Do label encoding
+for (col in selected_columns) {cars.df[[col]] <- as.numeric(as.factor(cars.df[[col]])) - 1}
+
+#Variables to keep
+keep <- c('doors', 'cylinders', 'engine', 'make', 'wheel.base', 'length', 'width', 'height', 'curb.weight', 'engine.size', 'bore', 'stroke', 'compression.ratio', 'horsepower', 'peak.rpm', 'city.mpg', 'highway.mpg', 'price')  
+
+#Save to cars.df
+cars.df <- cars.df[, keep]
+
+head(cars.df)
+```
+
+```{r Check cars.df}
+print(sum(is.na(cars.df)))
+```
+
+Problem Two, Part Two
+
+```{r find outliers}
+#Build function to find outliers using quantiles
+find_outliers <- function(x) {
+  if(is.numeric(x)) {
+    Q1 <- quantile(x, 0.25, na.rm = TRUE)
+    Q3 <- quantile(x, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    lower <- Q1 - 1.5 * IQR
+    upper <- Q3 + 1.5 * IQR
+    return(x < lower | x > upper)
+  } else {
+    return(rep(FALSE, length(x)))
+  }
+}
+
+#Apply function
+outliers <- sapply(cars.df, find_outliers)
+
+#New df
+cars.no.df <- cars.df[!rowSums(outliers), ]
+
+#Print outliers
+outlier_values <- cars.df[rowSums(outliers), ]
+print(outlier_values)
+```
+
+```{r check that dataframes make sense}
+#Check dfs
+cat("Original dataframe: ", dim(cars.df), "\n")
+cat("Dataframe without outliers: ", dim(cars.no.df), "\n")
+```
+
+```{r check again}
+head(cars.no.df)
+```
+
+```{r}
+str(cars.no.df)
+```
+
+Problem Two, Part Three
+
+```{r Distributions}
+library(psych)
+
+#Remove cylinders engine because constant and throwing errors
+cars.no.df <- cars.no.df[ , !(names(cars.no.df) %in% c('cylinders', 'engine'))]
+
+#Show distributions
+pairs.panels(cars.no.df)
+```
+
+```{r SW test}
+#Do Shapiro Wilkes test
+results <- sapply(cars.no.df, function(column) {
+  if(is.numeric(column)) {
+    shapiro.test(column)$p.value
+  } else {
+    NA
+  }
+})
+
+#Print
+results
+```
+
+I couldn't interpret the paris.panel, so I did a Shapiro Wilkes test. Only height and highway.mpg seem close to normally distributed based on the p values. I'll do a log transformation.
+
+```{r Log transformation}
+#Make cars.tx dataframe
+cars.tx <- cars.no.df
+
+#Loop over columns and log transform
+for(column_name in names(cars.tx)){cars.tx[[paste0("log_", column_name)]] <- log(cars.tx[[column_name]])}
+
+#Print
+head(cars.tx)
+```
+
+Problem Two, Part Four
+
+```{r Correlations}
+#Find correlations with price using cor function
+corrs_with_price <- cor(cars.no.df)[, "price"]
+corrs_with_price
+
+#Make correlation matrix using cor function
+cor_matrix <- cor(cars.no.df)
+cor_matrix
+```
+
+```{r Visualize correlations}
+library(corrplot)
+
+# Plot the matrix
+corrplot(cor_matrix, method="color", type="lower", order="hclust", 
+         tl.col="black", tl.srt=45, tl.cex = 0.5)
+```
+
+There is definitely collinearity. All the mpg variables are perfectly or almost perfectly correlated with the length, weight, width, horsepower, price varibles.Length, width, and base are also very positively correlated with the other measures of length, weight, and width. The mpg variables are not correlated at all with the rpm variables. Stroke are also not very correlated with the others. 
+
+Problem Two, Part Five
+
+```{r Train test and split}
+#Cars.df
+#Training set is 75% of data
+sample_cars <- floor(0.75 * nrow(cars.df))
+#Select rows for training
+train_cars <- sample(seq_len(nrow(cars.df)), size = sample_cars)
+
+#Creating sets
+cars.train <- cars.df[train_cars, ]
+cars.test <- cars.df[-train_cars, ]
+
+#Do same for cars.no.df
+sample_carsno <- floor(0.75 * nrow(cars.no.df))
+train_carsno <- sample(seq_len(nrow(cars.no.df)), size = sample_carsno)
+
+cars.no.train <- cars.no.df[train_carsno, ]
+cars.no.test <- cars.no.df[-train_carsno, ]
+
+#Do same for cars.tx
+sample_carstx <- floor(0.75 * nrow(cars.tx))
+train_carstx <- sample(seq_len(nrow(cars.tx)), size = sample_carstx)
+
+cars.tx.train <- cars.tx[train_carstx, ]
+cars.tx.test <- cars.tx[-train_carstx, ]
+```
+
+Problem Two, Part Six
+
+```{r Build multiple regression models}
+#Get rid of NA prices
+#Made function to find NA rows
+has_inf <- function(df) {
+  apply(df, 1, function(row) any(is.infinite(row)))
+}
+
+#Apply to cars.train
+cars.train <- cars.train[complete.cases(cars.train) & !has_inf(cars.train), ]
+
+#Apply to cars.no.train
+cars.no.train <- cars.no.train[complete.cases(cars.no.train) & !has_inf(cars.no.train), ]
+
+#Apply to cars.tx.train
+cars.tx.train <- cars.tx.train[complete.cases(cars.tx.train) & !has_inf(cars.tx.train), ]
+
+#Build models
+model_cars <- lm(price ~ ., data=cars.train)
+model_cars_no <- lm(price ~ ., data=cars.no.train)
+model_cars_tx <- lm(price ~ ., data=cars.tx.train)
+
+#Backward elimination, find pvalues and remove max pvalue if greater than 0.05
+backward_elimination <- function(model) {
+  while(TRUE) {
+    pvals <- summary(model)$coefficients[, "Pr(>|t|)"]
+    pvals <- pvals[-1]
+    max_pval <- max(pvals)
+    if(max_pval > 0.05) {remove <- names(which(pvals == max_pval))
+    formula <- as.formula(paste("price ~", paste(names(coef(model))[-1], collapse=" + "), " - ", remove))
+    model <- lm(formula, data=model$model)} else {break}}
+  return(model)}
+
+#Apply to data
+back_model_cars <- backward_elimination(model_cars)
+back_model_cars_no <- backward_elimination(model_cars_no)
+back_model_cars_tx <- backward_elimination(model_cars_tx)
+
+#View summaries of models
+summary(back_model_cars)
+summary(back_model_cars_no)
+summary(back_model_cars_tx)
+```
+
+Problem Two, Part Seven
+
+```{r regression tree model for cars}
+library(rpart)
+
+#Cars training
+model_tree_cars <- rpart(price ~ ., data=cars.train, method="anova")
+
+#Cars.no training
+model_tree_cars_no <- rpart(price ~ ., data=cars.no.train, method="anova")
+
+#Cars.tx training
+model_tree_cars_tx <- rpart(price ~ ., data=cars.tx.train, method="anova")
+```
+
+```{r plot tree}
+library(rpart.plot)
+
+#Cars plot
+rpart.plot(model_tree_cars, main="Cars Tree")
+
+#Cars.no plot
+rpart.plot(model_tree_cars_no, main="Cars No Outliers Tree")
+
+#Cars.tx plot
+rpart.plot(model_tree_cars_tx, main="Cars Transformed Tree")
+```
+
+Problem Two, Part Eight
+
+```{r Analysis Multiple regression models}
+#R squared in summary so calc RMSE for multiple regression models
+#Cars model R2 and RMSE
+#Calc r squared
+summary_reg <- summary(back_model_cars)
+adj_r2_reg <- summary_reg$adj.r.squared
+
+print(adj_r2_reg)
+
+#Predict and calc RMSE
+predictions_reg <- predict(back_model_cars, newdata=cars.test)
+residuals_reg <- cars.test$price - predictions_reg
+rmse_reg <- sqrt(mean(residuals_reg^2))
+
+print(rmse_reg)
+
+#Cars.no model R2 and RMSE
+#Calc r squared
+summary_reg2 <- summary(back_model_cars_no)
+adj_r2_reg2 <- summary_reg2$adj.r.squared
+
+print(adj_r2_reg2)
+
+#Predict and calc RMSE
+predictions_reg2 <- predict(back_model_cars_no, newdata=cars.no.test)
+residuals_reg2 <- cars.no.test$price - predictions_reg2
+rmse_reg2 <- sqrt(mean(residuals_reg2^2))
+
+print(rmse_reg2)
+
+#Cars.tx model R2 and RMSE
+#Calc r squared
+summary_reg3 <- summary(back_model_cars_tx)
+adj_r2_reg3 <- summary_reg3$adj.r.squared
+
+print(adj_r2_reg3)
+
+#Predict and calc RMSE
+predictions_reg3 <- predict(back_model_cars_tx, newdata=cars.tx.test)
+residuals_reg3 <- cars.tx.test$price - predictions_reg3
+rmse_reg3 <- sqrt(mean(residuals_reg3^2))
+
+print(rmse_reg3)
+```
+
+For the multiple regression models, the R2 are all fairly close to 1. However, the transformed mmodel is the closest and therefore the model that has the best fit to the data. The RMSE for the transformed model is much lower than the others, which implies again that the transformed model fits the data best. As expected, the cars model is the worst based on these metrics and the cars model without the outliers is in the middle. 
+
+```{r Analysis Tree models}
+#Cars.df tree model
+#Calculate r squared for number of predictors
+rs_tree <- 1 - model_tree_cars$deviance / model_tree_cars$dev
+n <- nrow(cars.train)
+p <- length(model_tree_cars$variable.importance)
+
+#r2 formula
+adj_r2_tree <- 1 - ((1 - rs_tree) * (n - 1) / (n - p - 1))
+
+print(adj_r2_tree)
+
+#Predict and calc RMSE
+predictions_tree <- predict(model_tree_cars, newdata=cars.test)
+residuals_tree <- cars.test$price - predictions_tree
+rmse_tree <- sqrt(mean(residuals_tree^2))
+
+print(rmse_tree)
+
+#Cars.no tree model
+#calc r squared
+rs_tree2 <- 1 - model_tree_cars_no$dev / model_tree_cars_no$deviance.tot
+n2 <- nrow(cars.no.train)
+p2 <- length(model_tree_cars_no$variable.importance)
+adj_r2_tree2 <- 1 - ((1 - rs_tree2) * (n2 - 1) / (n2 - p2 - 1))
+
+print(adj_r2_tree2)
+
+#Predict and calc RMSE
+predictions_tree2 <- predict(model_tree_cars_no, newdata=cars.no.test)
+residuals_tree2 <- cars.no.test$price - predictions_tree2
+rmse_tree2 <- sqrt(mean(residuals_tree2^2))
+
+print(rmse_tree2)
+
+#Cars.tx tree model
+#Calc r squared
+rs_tree3 <- 1 - model_tree_cars_tx$dev / model_tree_cars_tx$deviance.tot
+n3 <- nrow(cars.tx.train)
+p3 <- length(model_tree_cars_tx$variable.importance)
+adj_r2_tree3 <- 1 - ((1 - rs_tree3) * (n3 - 1) / (n3 - p3 - 1))
+
+print(adj_r2_tree3)
+
+#Predict and calc RMSE
+predictions_tree3 <- predict(model_tree_cars_tx, newdata=cars.tx.test)
+residuals_tree3 <- cars.tx.test$price - predictions_tree3
+rmse_tree3 <- sqrt(mean(residuals_tree3^2))
+
+print(rmse_tree3)
+```
+
+For the tree models, I had a hard time calculating R2. However, based on the RMSE values, the transformed model is the best fit. In this case, the cars model performs second-best and the cars model without outliers performs the worst. 
+
+It appears that the multiple regression model using the transformed cars data is the best choice out of all six. 
+
+Problem Two, Part Nine
+
+```{r Change in city and highway mpg for multiple regression models}
+#Cars.train
+cat("For cars mr model:\n")
+cat("Change in price for a unit increase in highway.mpg:", coef(model_cars)["highway.mpg"], "\n")
+cat("Change in price for a unit increase in city.mpg:", coef(model_cars)["city.mpg"], "\n\n")
+
+#Cars.no.train
+cat("For cars with no outliers mr model:\n")
+cat("Change in price for a unit increase in highway.mpg:", coef(model_cars_no)["highway.mpg"], "\n")
+cat("Change in price for a unit increase in city.mpg:", coef(model_cars_no)["city.mpg"], "\n\n")
+
+#Cars.tx.train
+cat("For cars transformed mr model:\n")
+cat("Change in price for a unit increase in highway.mpg:", coef(model_cars_tx)["highway.mpg"], "\n")
+cat("Change in price for a unit increase in city.mpg:", coef(model_cars_tx)["city.mpg"], "\n")
+```
+
+```{r change in highway mpg for tree models}
+#Get predictions for cars.train
+og_preds <- predict(model_tree_cars, newdata = cars.train)
+
+#Increase highway.mpg and predict
+cars.train$highway.mpg <- cars.train$highway.mpg + 1
+highway_mpg_new_preds <- predict(model_tree_cars, newdata = cars.train)
+
+#Calculate effect of increase in highway.mpg
+aveff_highway_mpg <- mean(highway_mpg_new_preds - og_preds)
+
+#Do for city.mpg
+cars.train$city.mpg <- cars.train$city.mpg + 1
+city_mpg_new_preds <- predict(model_tree_cars, newdata = cars.train)
+
+aveff_city_mpg <- mean(city_mpg_new_preds - highway_mpg_new_preds)
+
+#Print
+cat("For cars tree model:\n")
+cat("Average effect of one-unit increase in highway.mpg: ", aveff_highway_mpg, "\n")
+cat("Average effect of one-unit increase in city.mpg: ", aveff_city_mpg, "\n\n")
+
+#Cars.no.train
+og_preds_no <- predict(model_tree_cars_no, newdata = cars.no.train)
+
+#Increase highway.mpg and predict
+cars.no.train$highway.mpg <- cars.no.train$highway.mpg + 1
+highway_mpg_new_preds_no <- predict(model_tree_cars_no, newdata = cars.no.train)
+
+#Calculate average effect of increase in highway.mpg
+aveff_highway_mpg_no <- mean(highway_mpg_new_preds_no - og_preds_no)
+
+#Do for city.mpg
+cars.no.train$city.mpg <- cars.no.train$city.mpg + 1
+city_mpg_new_preds_no <- predict(model_tree_cars_no, newdata = cars.no.train)
+
+aveff_city_mpg_no <- mean(city_mpg_new_preds_no - highway_mpg_new_preds_no)
+
+#Print
+cat("For cars with no outliers tree model:\n")
+cat("Average effect of one-unit increase in highway.mpg: ", aveff_highway_mpg_no, "\n")
+cat("Average effect of one-unit increase in city.mpg: ", aveff_city_mpg_no, "\n\n")
+
+#Cars.tx
+og_preds_tx <- predict(model_tree_cars_tx, newdata = cars.tx.train)
+
+#Increase highway.mpg and predict
+cars.tx.train$highway.mpg <- cars.tx.train$highway.mpg + 1
+highway_mpg_new_preds_tx <- predict(model_tree_cars_tx, newdata = cars.tx.train)
+
+#Calculate effect of increase in highway.mpg
+aveff_highway_mpg_tx <- mean(highway_mpg_new_preds_tx - og_preds_tx)
+
+#Do for city.mpg
+cars.tx.train$city.mpg <- cars.tx.train$city.mpg + 1
+city_mpg_new_preds_tx <- predict(model_tree_cars_tx, newdata = cars.tx.train)
+
+aveff_city_mpg_tx <- mean(city_mpg_new_preds_tx - highway_mpg_new_preds_tx)
+
+#Print
+cat("For cars transformed tree model:\n")
+cat("Average effect of one-unit increase in highway.mpg: ", aveff_highway_mpg_tx, "\n")
+cat("Average effect of one-unit increase in city.mpg: ", aveff_city_mpg_tx, "\n")
+```
+
+Problem Two, Part Ten
+
+```{r 95% prediction interval}
+#Cars.train
+pred_intervals_cars <- predict(model_cars, newdata = cars.train, interval = "prediction", level = 0.95)
+
+#Cars.no.train
+pred_intervals_cars_no <- predict(model_cars_no, newdata = cars.no.train, interval = "prediction", level = 0.95)
+
+#Cars.tx.train
+pred_intervals_cars_tx <- predict(model_cars_tx, newdata = cars.tx.train, interval = "prediction", level = 0.95)
+
+#Print summary of intervals
+cat("95% Prediction Interval for cars.train: [", 
+    min(pred_intervals_cars[, "lwr"]), ", ", 
+    max(pred_intervals_cars[, "upr"]), "]\n")
+
+cat("95% Prediction Interval for cars.no.train: [", 
+    min(pred_intervals_cars_no[, "lwr"]), ", ", 
+    max(pred_intervals_cars_no[, "upr"]), "]\n")
+
+cat("95% Prediction Interval for cars.tx.train: [", 
+    min(pred_intervals_cars_tx[, "lwr"]), ", ", 
+    max(pred_intervals_cars_tx[, "upr"]), "]\n")
+```
+
+
+
