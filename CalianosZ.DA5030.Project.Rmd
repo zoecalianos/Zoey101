@@ -1,0 +1,704 @@
+---
+title: "Exploration of the Best Model for Bond Rating Classification"
+author: "Zoe Calianos"
+output: 
+  html_notebook:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+### Project Objective: 
+#### I built this bond classifier project to see if I could correctly predict bond ratings based on financial metrics (and sector). I work as a Credit Analyst, and I think this project could help me in my work. If a name is predicted to be in one category and is rated another in real life, that could be an investment opportunity (or at least a signal that the name needs a closer look). I wanted to use data from Bloomberg, but it is not publicly available so I used a Kaggle dataset instead. The Kaggle dataset is called "Corporate Credit Rating" and it contains a list of 2029 credit ratings with accompanying credit metrics. In the following code, I explore and prepare my data then test four different models - KNN, Random Forest (RF), Support Vector Machine (SVM), and Naive Bayes (NB). I also created an ensemble function that combines the four. Next, I simplified my data by combining the ratings into A, B, and C buckets and tried the four models and ensemble again. I also added a stepwise regression in this second iteration of models because I wanted to test it out. For all ten of my model versions, I use a confusion matrix and an accuracy score to evaluate them.  
+
+```{r, results = hide}
+#Libraries
+install.packages("readr")
+library(readr)
+
+install.packages("dplyr")
+library(dplyr)
+
+install.packages("corrplot")
+library(corrplot)
+
+install.packages("caret")
+library(caret)
+
+install.packages("stats")
+library(stats)
+
+install.packages("class")
+library(class)
+
+install.packages("randomForest")
+library(randomForest)
+
+install.packages("kernlab")
+library(kernlab)
+
+install.packages("e1071")
+library(e1071)
+
+install.packages("MASS")
+library(MASS)
+
+install.packages("nnet")
+library(nnet)
+```
+
+### Data Acquisition
+#### Load and view data
+
+```{r}
+#Loaded the kaggle csv to my github and set to public
+url <- "https://raw.githubusercontent.com/zoecalianos/Zoey101/master/bonds.csv"
+
+#Read csv from URL
+bonds <- read_csv(url)
+
+#Check bonds
+head(bonds)
+```
+
+### Data Exploration
+
+#### Inspect the variable types
+##### All  my variables are either characters or numbers, as expected. My data is 2029 rows and 31 columns. 
+
+```{r, results = hide}
+#Inspect variable types - all characters and strings, 2029 rows and 31 columns
+str(bonds)
+```
+
+#### Inspect the summary statistics of bonds data
+##### My data has some significant outliers, evidenced by the difference between the quartiles and means to the minimum and maximum values.For instance, the minimum returnonCapitalEmployed is -87162.16 while the 1st quartile is 0.03. 
+
+```{r}
+#View summary stats of variables
+summary(bonds)
+```
+
+#### Check for NA, NaN, or empty values
+##### My data has no NA, NaN, or empty values. 
+
+```{r}
+#Check for NAs, NaNs, and empties
+print(sum(is.na(bonds)))
+print(sum(bonds == "", na.rm = TRUE))
+numeric_columns <- sapply(bonds, is.numeric)
+print(sum(sapply(bonds[numeric_columns], function(x) sum(is.nan(x)))))
+```
+
+#### Check correlation, collinearity
+##### Based on my correlation matrix and corrplot, my data is mostly completely uncorrelated. The profit margin variables (pretax, gross, operating) are all highly correlated. Debt to equity ratio and company equity multiplier are highly correlated. Operating cash flow and free cash flow per share are very correlated. All of these relationships are highly sensical given their relatedness. Return on equity is perfectly uncorrelated with return on assets and return on capital employed. Return on assets and return on capital employed are both highly uncorrelated with asset and fixed asset turnover. 
+
+```{r, results = hide}
+#Make correlation matrix using cor function
+
+#Have to exclude rating because not numeric
+bonds_no_numeric <- bonds %>%
+                    select_if(is.numeric)
+
+cor_matrix <- cor(bonds_no_numeric)
+cor_matrix
+```
+
+
+```{r}
+#Plot the matrix because helps visualize
+corrplot(cor_matrix, method="color", type="lower", order="hclust", 
+         tl.col="black", tl.srt=45, tl.cex = 0.8)
+```
+
+#### Check chi squared test
+##### The only categorical variables that I felt needed to be analyzed are "Rating" and "Sector." I checked the frequencies of the variables first, because I knew there weren't many C or D rated names in the sample.The frequencies are too low for the chi squared test to be reliable and too high for a fisher test. However, based on the results of my chi squared test, there is a statistically significant relationship between "Rating" and "Sector."
+
+```{r, results = hide}
+#Check frequence before running chi squared test
+table(bonds$Rating)
+table(bonds$Sector)
+```
+
+```{r}
+#Combine categories
+bonds$RatingGrouped <- bonds$Rating
+bonds$RatingGrouped <- ifelse(bonds$Rating %in% c("A", "AA", "AAA"), "A-AA-AAA", bonds$RatingGrouped)
+bonds$RatingGrouped <- ifelse(bonds$Rating %in% c("B", "BB", "BBB"), "B-BB-BBB", bonds$RatingGrouped)
+bonds$RatingGrouped <- ifelse(bonds$Rating %in% c("C", "CC", "CCC", "D"), "Below BBB", bonds$RatingGrouped)
+
+#Make table
+cs_table <- table(bonds$RatingGrouped, bonds$Sector)
+
+#Chi squared test
+chi_squared_result <- chisq.test(cs_table)
+print(chi_squared_result)
+
+#Check expected frequencies
+expected_freq <- chi_squared_result$expected
+print(expected_freq)
+```
+
+#### Evaluation of distribution
+##### The p values of my Shapiro Wilkes test suggest that none of my data is normally distributed. I will need to make some adjustments before training my models. 
+
+```{r}
+#Do Shapiro Wilkes test for distributions
+results <- sapply(bonds, function(column) {
+  if(is.numeric(column)) {
+    shapiro.test(column)$p.value
+  } else {
+    NA
+  }
+})
+
+#Print
+results
+```
+
+### Data Cleaning and Shaping
+
+#### Cleaning/Encoding/Outlier Detection
+##### I checked for missing values earlier in my data exploration. Data imputation is not necessary. I made sure "Rating" was a factor variable so that my models would run. I built a function to find the outliers in the data and created a new dataframe without the outliers. The only categorical variable I wanted besides "Rating" was "Sector" so I encoded it and removed the others. I then split my data into training and test sets and scaled the numeric variables. The scaling is beneficial for the svm and knn models. 
+
+```{r, results = hide}
+#Make sure Rating is a factor so models work
+bonds$Rating <- factor(bonds$Rating)
+
+#Find outliers with quantiles function
+find_outliers <- function(x) {
+  if(is.numeric(x)) {
+    Q1 <- quantile(x, 0.25, na.rm = TRUE)
+    Q3 <- quantile(x, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    lower <- Q1 - 1.5 * IQR
+    upper <- Q3 + 1.5 * IQR
+    return(x < lower | x > upper)
+  } else {
+    return(rep(FALSE, length(x)))
+  }
+}
+
+#Apply function
+outliers <- sapply(bonds, find_outliers)
+
+#Make new dataframe without outliers
+bonds_no <- bonds[!rowSums(outliers), ]
+
+#Check and encode Sector... had problems here so added checks
+if("Sector" %in% names(bonds_no)) {
+    #Unique values before encoding
+    print("Unique sectors before encoding:")
+    print(unique(bonds_no$Sector))
+
+    #Label encode
+    bonds_no$Sector <- as.numeric(as.factor(bonds_no$Sector))
+
+    #Unique values after encoding
+    print("Unique sectors after encoding:")
+    print(unique(bonds_no$Sector))
+
+    #Compare counts
+    print("Counts before encoding:")
+    print(table(bonds$Sector))
+
+    print("Counts after encoding:")
+    print(table(bonds_no$Sector))
+
+    #Print head of dataframe without outliers and with encoded sector
+    print(head(bonds_no))
+} else {
+    stop("The 'Sector' column is missing after removing outliers.")
+}
+
+#Remove non-numeric columns
+bonds_no <- bonds_no[, sapply(bonds_no, is.numeric) | names(bonds_no) == "Rating"]
+
+#Split data into training and testing
+set.seed(123)  
+index <- createDataPartition(bonds_no$Rating, p = 0.75, list = FALSE)
+bonds_train <- bonds_no[index, ]
+bonds_test <- bonds_no[-index, ]
+
+#Scale numeric variables in training and test sets
+num_variables <- names(bonds_train)[sapply(bonds_train, is.numeric)]
+bonds_train[, num_variables] <- scale(bonds_train[, num_variables])
+bonds_test[, num_variables] <- scale(bonds_test[, num_variables])
+```
+
+```{r, results = hide}
+head(bonds_train)
+head(bonds_test)
+```
+
+
+#### Identification of principal components and feature engineering
+##### I wrote code to find the components that account for 95% of total variance. I added "Rating" back to my dataset after the pca calculations as I wanted that variable to be excluded since its my target variable. The training and testing sets that I move forward and train my models with contain the principal components and the rating. 
+
+```{r}
+#Keep Rating
+train_rating <- bonds_train$Rating
+test_rating <- bonds_test$Rating
+
+#Do PCA on numeric variables
+num_variables <- names(bonds_train)[sapply(bonds_train, is.numeric)]
+pca_result <- prcomp(bonds_train[num_variables], center = TRUE, scale. = TRUE)
+
+#Calculate components to keep
+var <- cumsum(pca_result$sdev^2) / sum(pca_result$sdev^2)
+num_components <- which(var > 0.95)[1]
+
+#Extract those components
+bonds_train_pca <- pca_result$x[, 1:num_components]
+bonds_test_pca <- predict(pca_result, newdata = bonds_test[num_variables])[, 1:num_components]
+
+#Convert PCA results back to data frames
+bonds_train_pca_df <- data.frame(bonds_train_pca)
+bonds_test_pca_df <- data.frame(bonds_test_pca)
+
+#Combine Rating with the PCA components
+bonds_train <- cbind(Rating = train_rating, bonds_train_pca_df)
+bonds_test <- cbind(Rating = test_rating, bonds_test_pca_df)
+
+#Print
+head(bonds_train)
+head(bonds_test)
+```
+
+##### I ran a series of checks on my data before I proceeded with my models to make sure that everything looked okay and that there were still no missing values. 
+
+```{r, results = hide}
+#Check datasets 
+print(head(bonds_train))
+print(head(bonds_test))
+```
+
+```{r, results = hide}
+#Check classes
+sapply(bonds_train, class)
+sapply(bonds_test, class)
+```
+
+
+```{r, results = hide}
+#Check rows
+nrow(bonds_train)
+nrow(bonds_test)  
+```
+
+```{r, results = hide}
+#Check for NAs
+print(sum(is.na(bonds_train)))
+print(sum(is.na(bonds_test)))
+```
+
+##### I checked the levels of my data and dropped the AAA, C, CC, CCC and D ratings buckets because they were very small and not present in my test data which threw off the models. 
+
+```{r}
+#Convert combined data back to data frames
+bonds_train <- data.frame(bonds_train)
+bonds_test <- data.frame(bonds_test)
+
+#Make sure Rating is a factor
+bonds_train$Rating <- as.factor(bonds_train$Rating)
+bonds_test$Rating <- as.factor(bonds_test$Rating)
+
+#Check predictor distribution
+table(bonds_train$Rating)
+table(bonds_test$Rating)
+```
+
+```{r}
+#Drop empty ratings buckets if there are any (needed this in a few iterations of my code)
+#Filter ratings AAA and CCC from training
+bonds_train <- subset(bonds_train, !Rating %in% c("AAA", "CCC"))
+
+#Filter ratings AAA and CCC from testing
+bonds_test <- subset(bonds_test, !Rating %in% c("AAA", "CCC"))
+
+#Drop unused levels
+bonds_train$Rating <- droplevels(bonds_train$Rating)
+bonds_test$Rating <- droplevels(bonds_test$Rating)
+
+#Check
+table(bonds_train$Rating)
+table(bonds_test$Rating)
+```
+
+
+```{r, results = hide}
+#Check that column names match in training and test
+print(colnames(bonds_train))
+
+print(colnames(bonds_test))
+
+if (!all(names(bonds_train) %in% names(bonds_test))) {
+  stop("Mismatch")
+}
+```
+
+### Model Construction
+
+#### KNN Model (Creation of model A with proper data encoding)
+##### I started with a KNN model due to its simplicity and flexibility. The confusion matrix tells us that the KNN model predicted 26 As right, 2 AAs, 3 Bs, 10 BBs, and 45 BBBs. The model is best at predicting As and BBBs. 
+
+```{r}
+#The k fold cross validation indicated that 5 is optimal
+k <- 5
+
+#Train model
+knn_predictions <- knn(train = bonds_train[, -which(names(bonds_train) == "Rating")],
+                test = bonds_test[, -which(names(bonds_test) == "Rating")],
+                cl = bonds_train$Rating, k = k)
+
+#Evaluate with confusion matrix
+confusionMatrix_knn <- table(Predicted = knn_predictions, Actual = bonds_test$Rating)
+print(confusionMatrix_knn)
+
+```
+
+#### Random Forest Model (Creation of model B with proper data encoding)
+##### I used a Random Forest model because I thought it would handle the dimensionality of my data well and mitigate any overfitting. The confusion matrix tells us that the RF model predicted 28 As right, 1 AAs, 1 Bs, 12 BBs, and 54 BBBs. The model is best at predicting As and BBBs, same as the KNN model.  
+
+```{r}
+#Set seed
+set.seed(123)
+
+#Train the Random Forest model... k fold cross validation indicated mtry = 2 for optimal number of variables at splits
+rf_model <- randomForest(Rating ~ ., data = bonds_train, mtry = 13)
+
+#Predict 
+rf_predictions <- predict(rf_model, bonds_test)
+
+#Evaluate with confusion matrix
+confusionMatrix_rf <- table(Predicted = rf_predictions, Actual = bonds_test$Rating)
+print(confusionMatrix_rf)
+```
+
+#### SVM Model (Creation of model C with proper data encoding)
+##### I also tried an SVM model. I picked SVM because it's effective with high dimensional data. I used a kernel so that my model could perform non-linear classification. The confusion matrix tells us that the RF model predicted 21 As right, 0 AAs, 0 Bs, 10 BBs, and 63 BBBs. The model is best at predicting As and BBBs, same as the KNN and RF models.  
+
+```{r}
+#K fold cross validation indicated to use these sigma and cost paramenters
+svm_model <- ksvm(Rating ~ ., data = bonds_train, method = "svmRadial", cost = 32, sigma = 0.04401241)
+
+#make predictions
+svm_predictions <- predict(svm_model, bonds_test)
+
+#Evaluate with confusion matrix
+confusionMatrix_svm <- table(Predicted = svm_predictions, Actual = bonds_test$Rating)
+print(confusionMatrix_svm)
+```
+
+#### Naive Bayes Model (Creation of model D with proper data encoding)
+##### Next, I tried a Naive Bayes model. In class, we used the NB model for text classification, and I was curious to see how it would do with a different kind of classification. The confusion matrix tells us that the RF model predicted 14 As right, 1 AAs, 5 Bs, 11 BBs, and 40 BBBs. The model is best at predicting As and BBBs, same as the SVM, KNN, and RF models. This model performed the poorest based on its confusion matrix. 
+
+```{r}
+#Train nb model and make predictions
+nb_model <- naiveBayes(Rating ~ ., data = bonds_train, laplace = 0, usekernel = FALSE, adjust = 1)
+nb_predictions <- predict(nb_model, bonds_test)
+
+#Evaluate with confusion matrix
+confusionMatrix_nb <- table(Predicted = nb_predictions, Actual = bonds_test$Rating)
+print(confusionMatrix_nb)
+```
+
+### Model Evaluation
+
+#### Comparison of Confusion Matrices
+##### Random Forest was the best model at predicting BBB, which is the most common rating in the dataset. All the models struggled with AA and B, potentially due to the low numbers of those ratings. Naive Bayes and Random Forest tend to over predict BBB, while KNN's misclassifications range the ratings. 
+
+#### Accuracy Calculation
+##### I used accuracy as a measure of model efficacy because I can use it across all four models, it's easily interpreted, and it works well for classification problems. The models' accuracies go from RF, KNN, SVM, NB in order of most to least accurate. I wasn't surprised to see the RF model with the highest accuracy because they handle large, noisy data well. While SVM really struggled predicting AA and B (didn't predict any), it has a relatively high accuracy score which indicates that it performs well on the more populous classes. KNN's 50% accuracy could be due to the model's sensitivity to scale or noise. I try to eliminate some of this in my later steps. Finally, the Naive Bayes model has the lowest accuracy score. This is likely due to the fact that some of my classes are highly correlated. 
+
+```{r}
+#Make accuracy function
+calculate_accuracy <- function(predicted, actual) {sum(predicted == actual) / length(actual)}
+
+#Filter NAs for nb... not sure why this comes up since I checked for NAs earlier, but alas it did
+valid_indices <- which(!is.na(nb_predictions))
+nb_accuracy <- calculate_accuracy(nb_predictions[valid_indices], bonds_test$Rating[valid_indices])
+
+#Calculate accuracy for the others
+knn_accuracy <- calculate_accuracy(knn_predictions, bonds_test$Rating)
+rf_accuracy <- calculate_accuracy(rf_predictions, bonds_test$Rating)
+svm_accuracy <- calculate_accuracy(svm_predictions, bonds_test$Rating)
+
+#Print
+model_accuracies <- c(KNN = knn_accuracy, Random_Forest = rf_accuracy, SVM = svm_accuracy, NB = nb_accuracy)
+print(model_accuracies)
+```
+
+#### K Fold Cross Validation
+##### I set a seed so that the k fold is the same each time I run it. I picked 10 folds because its a common number for cross validation. 
+
+```{r}
+set.seed(123)  
+
+#Control method for cross validation, 10 common number to choose
+train_control <- trainControl(method = "cv", number = 10)
+```
+
+##### I applied my train_control function to the knn model. It found that the optimal k is 5. I went back and edited my KNN model. 
+
+```{r}
+#Apply to KNN model
+knn_fit <- train(Rating ~ ., data = bonds_train, method = "knn", trControl = train_control,preProcess = c("center", "scale"), tuneLength = 10) 
+print(knn_fit)
+```
+
+##### I applied my train_control function to the RF model. It found that the optimal number of predictors is 3. I went back and edited my FR model. 
+
+```{r}
+#Apply to Random Forest model and print
+rf_fit <- train(Rating ~ ., data = bonds_train, method = "rf", trControl = train_control, tuneLength = 10) 
+print(rf_fit)
+```
+
+##### I applied my train_control function to the SVM model. It found that the optimal sigma and C are 0.044 and 32. I went back and edited my SVM model. 
+
+```{r}
+#Apply to SVM model and print
+svm_fit <- train(Rating ~ ., data = bonds_train, method = "svmRadial", trControl = train_control, tuneLength = 10) 
+print(svm_fit)
+```
+
+##### I applied my train__control function to the Naive Bayes model. It found that the optimal parameters for the model are laplace = 0, usekernel = FALSE, and adjust = 1. I went back and edited my NB model.
+
+```{r}
+#Apply to Naive Bayes model and print
+nb_fit <- train(Rating ~ ., data = bonds_train, method = "naive_bayes", trControl = train_control, tuneLength = 10) 
+print(nb_fit)
+```
+
+##### I combined the model fits I calculated with my k fold cross validations and viewed their accuracies and kappas. The RF and SVM models perform best based on accuracy. The SVM model is the most consistent and has the highest accuracy. The RF model has the best highest maximum accuracy but it has a high performance variance. The NB model has the lowest accuracy and worst kappa. 
+
+```{r}
+#Combine and view accuracies and kappas
+results <- resamples(list(KNN = knn_fit, RandomForest = rf_fit, SVM = svm_fit, NaiveBayes = nb_fit))
+summary(results)
+```
+
+### Model Tuning and Performance Improvement
+
+#### Construction of Ensemble and application of Ensemble
+##### The ensemble function combines the predictions of all four models. I added a part to check the length of the predictions because I was catching an error there. The apply function creates a frequency table that finds which predictions occur most frequently.
+
+```{r}
+#Make function that combines four models
+create_ensemble <- function(knn_pred, rf_pred, svm_pred, nb_pred) {
+  #Check if predictions have same length, was having problem here
+  if(!all(length(knn_pred) == length(rf_pred), 
+          length(knn_pred) == length(svm_pred), 
+          length(knn_pred) == length(nb_pred))) {
+    stop("Predictions have different lengths")
+  }
+
+  #Make predictions using majority vote
+  predictions <- data.frame(knn_pred, rf_pred, svm_pred, nb_pred)
+  ensemble_pred <- apply(predictions, 1, function(x) {
+    tbl <- table(x)
+    return(as.character(names(tbl)[which.max(tbl)]))
+  })
+  
+  return(ensemble_pred)
+}
+
+#Store ensemble predictions 
+ensemble_predictions <- create_ensemble(knn_predictions, rf_predictions, svm_predictions, nb_predictions)
+```
+
+##### Here I evaluate the performance of my ensemble function with a confusion matrix and accuracy calculation. According to the confusion matrix, the model gets 20 A's right, no AA or B's right, 12 BB's, and 51 BBB's. Similar to the other models, the ensemble model does well with BBB and poorly with AAs. The model is 49% accurate, which is lower than the KNN and RF models and suggests that those models perform bettern on their own than combined with the SVM and NB models. 
+
+```{r}
+#Evalute with confusion matrix and accuracy
+confusionMatrix_ens <- table(Predicted = ensemble_predictions, Actual = bonds_test$Rating)
+
+print(confusionMatrix_ens)
+
+ens_accuracy <- sum(diag(confusionMatrix_ens)) / sum(confusionMatrix_ens)
+print(ens_accuracy)
+```
+
+#### Testing encoding my ratings and stepwise regression before training models
+##### I wanted to try simplifying the ratings because the differences can be very hard to detect even for experts. I changed all the ratings with an A in them to As, and the same for Bs and Cs. 
+
+```{r}
+#Wanted to try making all ratings that start with A an A, with B a B, and with C a C and exclude D to simplify... Even credit analysts have a hard time distinguishing between the levels (and my models definitely did)
+categorize_rating <- function(rating) {
+  if (startsWith(as.character(rating), "A")) {
+    return("A")
+  } else if (startsWith(as.character(rating), "B")) {
+    return("B")
+  } else if (startsWith(as.character(rating), "C")) {
+    return("C")
+  } else {
+    return(as.character(rating)) 
+  }
+}
+
+#Apply to Rating column
+bonds_no$GroupedRating <- as.factor(sapply(bonds_no$Rating, categorize_rating))
+
+#Check
+table(bonds_no$GroupedRating)
+```
+
+##### Then, I encoded the ratings to 0, 1, and 2 so that they work better with the models. 
+
+```{r}
+#Made function to encode ratings so works better with models
+encode_rating <- function(rating) {
+  if (rating == "A") {
+    return(0)
+  } else if (rating == "B") {
+    return(1)
+  } else if (rating == "C") {
+    return(2)
+  } else {
+    return(NA) 
+  }
+}
+
+#Apply to GroupedRating
+bonds_no$EncodedRating <- sapply(bonds_no$GroupedRating, encode_rating)
+
+#Check
+table(bonds_no$GroupedRating, bonds_no$EncodedRating)
+
+```
+
+##### I did a stepwise regression to find the most relevant variables. I used a multinomial logistic regression model because my response variable is categorical and has multiple classes. I used AIC because it balances fit with number of parameters. 
+
+```{r, results = hide}
+#Fit multinomial model but exclude ratings categories because otherwise it only selects those
+multinom_model <- multinom(EncodedRating ~ . - Rating - GroupedRating, data = bonds_no)
+
+#Stepwise model selection
+stepwise_multinom_model <- stepAIC(multinom_model, direction = "both")
+
+#Show model
+summary(stepwise_multinom_model)
+
+#Variable names from stepwise
+sw_model_formula <- formula(stepwise_multinom_model)
+sw_vars <- all.vars(sw_model_formula)
+
+#Make sure EncodedRating is included in the selected dataset and remove response variables
+sw_vars <- unique(sw_vars[!sw_vars %in% c("EncodedRating", "Rating", "GroupedRating")])
+
+#Create dataset with EncodedRating as the response variable
+sw_data <- bonds_no[, c(sw_vars, "EncodedRating")]
+
+#Check
+print(head(sw_data))
+```
+
+##### I split my sw data into training and testing sets. 
+
+```{r}
+#Split into training and testing sets
+set.seed(123)
+index <- createDataPartition(sw_data$EncodedRating, p = 0.75, list = FALSE)
+selected_train <- sw_data[index, ]
+selected_test <- sw_data[-index, ]
+```
+
+##### I retrained my models and had to add code to make sure EncodedRating is a factor and the KNN model only uses numeric data. 
+
+```{r}
+#Make sure EncodedRating is factor
+selected_train$EncodedRating <- as.factor(selected_train$EncodedRating)
+selected_test$EncodedRating <- as.factor(selected_test$EncodedRating)
+
+#Only numeric columns for KNN, had a problem with this
+numeric_predictors <- names(selected_train)[sapply(selected_train, is.numeric) & !names(selected_train) %in% "GroupedRating"]
+
+#Retrain models
+knn_predictions_2 <- knn(train = selected_train[, numeric_predictors], test = selected_test[, numeric_predictors], cl = selected_train$EncodedRating, k = k)
+
+set.seed(123)
+rf_model_2 <- randomForest(EncodedRating ~ ., data = selected_train)
+rf_predictions_2 <- predict(rf_model_2, selected_test)
+
+svm_model_2 <- svm(EncodedRating ~ ., data = selected_train)
+svm_predictions_2 <- predict(svm_model_2, selected_test)
+
+nb_model_2 <- naiveBayes(EncodedRating ~ ., data = selected_train)
+nb_predictions_2 <- predict(nb_model_2, selected_test)
+
+```
+
+##### I evaluated my new models with confusion matrices and accuracy calculations. The KNN model misclassifies 0s frequently. It's accuracy score of 68% is the same as the NB model. The KNN model I did earlier was much less accurate (50%). The Random Forest model had fewer misclassifications in its confusion matrix than the KNN. It has a fairly high accuracy score of 79%. This is the highest of any of the models thus far. The SVM model still had a high level of misclassifications, but its accuracy is much higher in this iteration (73% vs. 48%). Finally, the Naive Bayes model has a fairly balanced confusion matrix, which is similar to KNN. It predicts a couple class 2, which the other models don't. NB models tend to consider a broader range of predictions. The accuracy of 68% is okay, and much higher than the previous verion (39%).
+
+```{r}
+#Evaluate retrained models
+
+#KNN 2
+confusionMatrix_knn_2 <- table(Predicted = knn_predictions_2, Actual = selected_test$EncodedRating)
+print("Confusion Matrix KNN Model:")
+print(confusionMatrix_knn_2)
+
+knn_accuracy_2 <- sum(diag(confusionMatrix_knn_2)) / sum(confusionMatrix_knn_2)
+print(paste("Accuracy KNN Model 2:", knn_accuracy_2))
+
+#RF 2
+confusionMatrix_rf_2 <- table(Predicted = rf_predictions_2, Actual = selected_test$EncodedRating)
+print("Confusion Matrix RF Model 2:")
+print(confusionMatrix_rf_2)
+
+rf_accuracy_2 <- sum(diag(confusionMatrix_rf_2)) / sum(confusionMatrix_rf_2)
+print(paste("Accuracy RF Model 2:", rf_accuracy_2))
+
+#SVM 2
+confusionMatrix_svm_2 <- table(Predicted = svm_predictions_2, Actual = selected_test$EncodedRating)
+print("Confusion Matrix SVM Model 2:")
+print(confusionMatrix_svm_2)
+
+svm_accuracy_2 <- sum(diag(confusionMatrix_svm_2)) / sum(confusionMatrix_svm_2)
+print(paste("Accuracy SVM Model 2:", svm_accuracy_2))
+
+#NB 2
+confusionMatrix_nb_2 <- table(Predicted = nb_predictions_2, Actual = selected_test$EncodedRating)
+print("Confusion Matrix NB Model 2:")
+print(confusionMatrix_nb_2)
+
+nb_accuracy_2 <- sum(diag(confusionMatrix_nb_2)) / sum(confusionMatrix_nb_2)
+print(paste("Accuracy NB Model 2:", nb_accuracy_2))
+```
+
+##### I made a new ensemble model with my sw data. 
+
+```{r}
+#Function to create an ensemble model
+create_ensemble_2 <- function(knn_pred, rf_pred, svm_pred, nb_pred) {
+  predictions <- data.frame(knn_pred, rf_pred, svm_pred, nb_pred)
+  # Apply 
+  ensemble_pred_2 <- apply(predictions, 1, function(x) {
+    tbl <- table(x)
+    return(as.character(names(tbl)[which.max(tbl)]))
+  })
+  
+  return(ensemble_pred_2)
+}
+
+#Use emsemble 2 to get predictions
+ensemble_predictions_2 <- create_ensemble_2(knn_predictions_2, rf_predictions_2, svm_predictions_2, nb_predictions_2)
+```
+
+##### I tested my model with a confusion matrix and accuracy calculation. This ensemble function is a much better fit than the other one, probably due to the simplification of the data. This ensemble model does very well predicting 1s, but not great predicting 0s and has no 2s. The ensemble's accuracy score of 76% is higher than the previous ensemble function (26%), and most of the other models, except the second iteration of the RF model (79%). It's accuracy score is very close the the second SVM model, but RF is still the best option.  
+
+```{r}
+#Evaluate ensemble 2
+confusionMatrix_ens_2 <- table(Predicted = ensemble_predictions_2, Actual = selected_test$EncodedRating)
+print("Confusion Matrix for Ensemble Model 2:")
+print(confusionMatrix_ens_2)
+
+ens_accuracy_2 <- sum(diag(confusionMatrix_ens_2)) / sum(confusionMatrix_ens_2)
+print(paste("Accuracy for Ensemble Model 2:", ens_accuracy_2))
+```
+
+### Final Project Conclusion: 
+#### As I expected, the models were much better at predicted credit ratings once I simplified the groupings. The Random Forest model was the best performer in both the ungrouped and grouped versions. The SVM model did well, but not as well as the RF model. I would be unlikely to try a Naive Bayes model again for this problem. I believe I can switch my dataset to an index from my Bloomberg Terminal and use this project in my work, which was the goal. I'm excited to use it and refine it until I have something truly value-add. 
+
