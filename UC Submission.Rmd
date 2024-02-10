@@ -1,0 +1,323 @@
+---
+title: "Simplified Version of Bond Classifier for MS in Applied Data Science Application"
+date: "February 2024"
+author: "Zoe Calianos"
+output: pdf_document
+---
+###### I built this bond classifier project to see if I could correctly predict bond ratings based on financial metrics (and sector). If a name is predicted to be in one category and is rated another in real life, that could be an investment opportunity (or at least a signal that the name needs a closer look). I used a Kaggle dataset for this version. The Kaggle dataset is called "Corporate Credit Rating" and it contains a list of 2029 credit ratings with accompanying credit metrics. It was created by Alan Gewerc and was last updated in 2020. 
+
+###### In the following code, I explore and prepare my data then test two different models - Random Forest (RF) and Support Vector Machine (SVM). I also created an ensemble function that combines the two. I use a confusion matrix and an accuracy score to evaluate them. The accuracy of my current version of this model is ~80% but I have only included a basic version here. 
+
+```{r, echo = TRUE, results = 'hide', message = FALSE, warning = FALSE}
+#Libraries
+library(readr)
+
+library(dplyr)
+
+library(corrplot)
+
+library(caret)
+
+library(stats)
+
+library(class)
+
+library(randomForest)
+
+library(kernlab)
+
+library(e1071)
+
+library(MASS)
+
+library(nnet)
+```
+
+###### Load and view data
+
+```{r}
+#Loaded the kaggle csv to my github and set to public
+url <- "https://raw.githubusercontent.com/zoecalianos/Zoey101/master/bonds.csv"
+
+#Read csv from URL
+bonds <- read_csv(url)
+
+#Check bonds
+head(bonds)
+```
+
+###### Inspect the variable types
+
+```{r, results = 'hide'}
+#Inspect variable types - all characters and strings, 2029 rows and 31 columns
+str(bonds)
+```
+
+###### Inspect the summary statistics of bonds data.
+
+```{r}
+#View summary stats of variables
+summary(bonds)
+```
+
+###### Check for NA, NaN, or empty values
+
+```{r}
+#Check for NAs, NaNs, and empties
+print(sum(is.na(bonds)))
+print(sum(bonds == "", na.rm = TRUE))
+numeric_columns <- sapply(bonds, is.numeric)
+print(sum(sapply(bonds[numeric_columns], function(x) sum(is.nan(x)))))
+```
+
+###### Check correlation, collinearity
+
+```{r, results = 'hide'}
+#Make correlation matrix using cor function
+
+#Have to exclude rating because not numeric
+bonds_no_numeric <- bonds %>% select_if(is.numeric)
+
+cor_matrix <- cor(bonds_no_numeric)
+cor_matrix
+```
+
+```{r}
+#Plot the matrix because helps visualize
+corrplot(cor_matrix, method="color", type="lower", order="hclust", tl.col="black", tl.srt=45, tl.cex = 0.8)
+```
+
+###### Evaluation of distribution
+
+```{r}
+#Do Shapiro Wilkes test for distributions
+results <- sapply(bonds, function(column) {
+  if(is.numeric(column)) {
+    shapiro.test(column)$p.value
+  } else {
+    NA
+  }
+})
+
+#Print
+results
+```
+
+###### Cleaning/Encoding/Outlier Detection
+
+```{r, results = 'hide'}
+#Make sure Rating is a factor so models work
+bonds$Rating <- factor(bonds$Rating)
+
+#Find outliers with quantiles function
+find_outliers <- function(x) {
+  if(is.numeric(x)) {
+    Q1 <- quantile(x, 0.25, na.rm = TRUE)
+    Q3 <- quantile(x, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    lower <- Q1 - 1.5 * IQR
+    upper <- Q3 + 1.5 * IQR
+    return(x < lower | x > upper)
+  } else {
+    return(rep(FALSE, length(x)))
+  }
+}
+
+#Apply function
+outliers <- sapply(bonds, find_outliers)
+
+#Make new dataframe without outliers
+bonds_no <- bonds[!rowSums(outliers), ]
+
+#Encode Sector 
+bonds_no$Sector <- as.numeric(as.factor(bonds_no$Sector))
+
+#Remove non-numeric columns
+bonds_no <- bonds_no[, sapply(bonds_no, is.numeric) | names(bonds_no) == "Rating"]
+
+#Split data into training and testing
+set.seed(123)  
+index <- createDataPartition(bonds_no$Rating, p = 0.75, list = FALSE)
+bonds_train <- bonds_no[index, ]
+bonds_test <- bonds_no[-index, ]
+
+#Scale numeric variables in training and test sets
+num_variables <- names(bonds_train)[sapply(bonds_train, is.numeric)]
+bonds_train[, num_variables] <- scale(bonds_train[, num_variables])
+bonds_test[, num_variables] <- scale(bonds_test[, num_variables])
+```
+
+###### Identification of principal components 
+
+```{r}
+#Keep Rating
+train_rating <- bonds_train$Rating
+test_rating <- bonds_test$Rating
+
+#Do PCA on numeric variables
+num_variables <- names(bonds_train)[sapply(bonds_train, is.numeric)]
+pca_result <- prcomp(bonds_train[num_variables], center = TRUE, scale. = TRUE)
+
+#Calculate components to keep
+var <- cumsum(pca_result$sdev^2) / sum(pca_result$sdev^2)
+num_components <- which(var > 0.95)[1]
+
+#Extract those components
+bonds_train_pca <- pca_result$x[, 1:num_components]
+bonds_test_pca <- predict(pca_result, newdata = bonds_test[num_variables])[, 1:num_components]
+
+#Convert PCA results back to data frames
+bonds_train_pca_df <- data.frame(bonds_train_pca)
+bonds_test_pca_df <- data.frame(bonds_test_pca)
+
+#Combine Rating with the PCA components
+bonds_train <- cbind(Rating = train_rating, bonds_train_pca_df)
+bonds_test <- cbind(Rating = test_rating, bonds_test_pca_df)
+
+#Print
+head(bonds_train)
+head(bonds_test)
+```
+
+###### I checked the levels of my data and dropped the AAA, C, CC, CCC and D ratings buckets because they were very small and not present in my test data which threw off the models. 
+
+```{r}
+#Convert combined data back to data frames
+bonds_train <- data.frame(bonds_train)
+bonds_test <- data.frame(bonds_test)
+
+#Make sure Rating is a factor
+bonds_train$Rating <- as.factor(bonds_train$Rating)
+bonds_test$Rating <- as.factor(bonds_test$Rating)
+
+#Check predictor distribution
+table(bonds_train$Rating)
+table(bonds_test$Rating)
+```
+
+```{r}
+#Drop empty ratings buckets if there are any (needed this in a few iterations of my code)
+#Filter ratings AAA and CCC from training
+bonds_train <- subset(bonds_train, !Rating %in% c("AAA", "CCC"))
+
+#Filter ratings AAA and CCC from testing
+bonds_test <- subset(bonds_test, !Rating %in% c("AAA", "CCC"))
+
+#Drop unused levels
+bonds_train$Rating <- droplevels(bonds_train$Rating)
+bonds_test$Rating <- droplevels(bonds_test$Rating)
+
+#Check
+table(bonds_train$Rating)
+table(bonds_test$Rating)
+```
+
+###### Random Forest Model 
+
+```{r}
+#Set seed
+set.seed(123)
+
+#Train the Random Forest model... k fold cross validation indicated mtry = 2 for optimal number of variables at splits
+rf_model <- randomForest(Rating ~ ., data = bonds_train, mtry = 3)
+
+#Predict 
+rf_predictions <- predict(rf_model, bonds_test)
+
+#Evaluate with confusion matrix
+confusionMatrix_rf <- table(Predicted = rf_predictions, Actual = bonds_test$Rating)
+print(confusionMatrix_rf)
+```
+
+###### SVM Model 
+
+```{r}
+#K fold cross validation indicated to use these sigma and cost paramenters
+svm_model <- ksvm(Rating ~ ., data = bonds_train, method = "svmRadial", cost = 4, sigma = 0.04368207)
+
+#make predictions
+svm_predictions <- predict(svm_model, bonds_test)
+
+#Evaluate with confusion matrix
+confusionMatrix_svm <- table(Predicted = svm_predictions, Actual = bonds_test$Rating)
+print(confusionMatrix_svm)
+```
+
+###### Model Evaluation
+
+```{r}
+#Make accuracy function
+calculate_accuracy <- function(predicted, actual) {sum(predicted == actual) / length(actual)}
+
+#Calculate accuracy 
+rf_accuracy <- calculate_accuracy(rf_predictions, bonds_test$Rating)
+svm_accuracy <- calculate_accuracy(svm_predictions, bonds_test$Rating)
+
+#Print
+model_accuracies <- c(Random_Forest = rf_accuracy, SVM = svm_accuracy)
+print(model_accuracies)
+```
+
+###### K Fold Cross Validation
+
+```{r}
+set.seed(123)  
+
+#Control method for cross validation, 10 common number to choose
+train_control <- trainControl(method = "cv", number = 10)
+```
+
+```{r}
+#Apply to Random Forest model and print
+rf_fit <- train(Rating ~ ., data = bonds_train, method = "rf", trControl = train_control, tuneLength = 10) 
+print(rf_fit)
+```
+
+```{r}
+#Apply to SVM model and print
+svm_fit <- train(Rating ~ ., data = bonds_train, method = "svmRadial", trControl = train_control, tuneLength = 10) 
+print(svm_fit)
+```
+
+```{r}
+#Combine and view accuracies and kappas
+results <- resamples(list(RandomForest = rf_fit, SVM = svm_fit))
+summary(results)
+```
+
+###### The ensemble function combines the predictions of the models. 
+
+```{r}
+#Make function that combines two models
+create_ensemble <- function(rf_pred, svm_pred) {
+  #Check if predictions have same length
+  if(length(rf_pred) != length(svm_pred)) {
+    stop("Predictions have different lengths")
+  }
+
+  #Make predictions using majority vote
+  predictions <- data.frame(rf_pred, svm_pred)
+  ensemble_pred <- apply(predictions, 1, function(x) {
+    tbl <- table(x)
+    return(as.character(names(tbl)[which.max(tbl)]))
+  })
+  
+  return(ensemble_pred)
+}
+
+#Store ensemble predictions 
+ensemble_predictions <- create_ensemble(rf_predictions, svm_predictions)
+```
+
+###### Evaluate performance of ensemble function
+
+```{r}
+#Evalute with confusion matrix and accuracy
+confusionMatrix_ens <- table(Predicted = ensemble_predictions, Actual = bonds_test$Rating)
+
+print(confusionMatrix_ens)
+
+ens_accuracy <- sum(diag(confusionMatrix_ens)) / sum(confusionMatrix_ens)
+print(ens_accuracy)
+```
+
